@@ -1,5 +1,5 @@
 #!/bin/bash
-# start_cellbridge.sh — Don'tMove Kit：在 Mac 上启动 CellBridge SIP 网关（iPhone 通话伴侣）
+# start_cellbridge.sh — 在 Mac 上启动 CellBridge SIP 网关（DJiPhone Kit 的 iPhone 通话伴侣）
 #
 # 组件：
 #   1. at_pty_bridge.py     USB AT ↔ PTY 串口桥（互斥：会先退出 DJiPhone Kit App）
@@ -7,7 +7,7 @@
 #   3. cellbridge-gateway   SIP 服务器 + 短信引擎（iPhone 经 SIP/Tailscale 接入）
 #
 # 前提：模块侧语音运行时已部署（语音路由 ready）。
-#   若刚重启过模块，请先跑一次 install.sh 部署语音运行时，再跑本脚本。
+#   若刚重启过模块，请先打开 DJiPhone Kit.app 让它自动部署一次，再跑本脚本。
 #
 # 用法：./start_cellbridge.sh          启动（Ctrl+C 停止全部组件）
 #       ./start_cellbridge.sh stop     停止全部组件
@@ -51,6 +51,9 @@ BRIDGE="$DIR/voice-audio-bridge"
 GATEWAY="$DIR/cellbridge-gateway"
 SIP_USER="${SIP_USER:-iphone}"
 SIP_PASS="${SIP_PASS:-cellbridge-$(id -un)}"
+# 第二分机：出门经 Tailscale 注册用（tailnet 内 WireGuard 加密，弱口令可接受）
+SIP_USER2="${SIP_USER2:-remote}"
+SIP_PASS2="${SIP_PASS2:-cellbridge-remote-$(id -un)}"
 
 mkdir -p "$RUN" "$DATA" "$LOG"
 
@@ -400,6 +403,8 @@ sip:
   users:
     - username: $SIP_USER
       password: $SIP_PASS
+    - username: $SIP_USER2
+      password: $SIP_PASS2
 recording:
   enabled: false
 EOF
