@@ -189,6 +189,17 @@ func (s *Server) readLoop() {
 			continue
 		}
 		msg := string(buf[:n])
+		// 信令轨迹：毫秒级时间戳 + 报文首行 + 远端端口。用来诊断
+		// 「客户端秒挂」这类时序问题（RTP 噪声不含 SIP 首行样式，会被过滤）。
+		if first, _, ok := strings.Cut(msg, "\r\n"); ok && (strings.HasPrefix(first, "SIP/2.0") ||
+			strings.HasPrefix(first, "INVITE ") || strings.HasPrefix(first, "ACK ") ||
+			strings.HasPrefix(first, "BYE ") || strings.HasPrefix(first, "CANCEL ") ||
+			strings.HasPrefix(first, "REGISTER ") || strings.HasPrefix(first, "MESSAGE ") ||
+			strings.HasPrefix(first, "OPTIONS ")) {
+			at := time.Now().Format("15:04:05.000")
+			cseq := parseHeader(msg, "CSeq")
+			slog.Info("sip trace in", "at", at, "from", remote.String(), "line", first, "cseq", cseq, "callid", parseHeader(msg, "Call-ID"))
+		}
 		go s.handleMessage(msg, remote)
 	}
 }
@@ -1030,7 +1041,9 @@ func (s *Server) sendResponseWithTag(remote *net.UDPAddr, req string, code int, 
 	resp := buildResponse(req, code, reason, extraHeaders, body, tag)
 	if _, err := s.conn.WriteToUDP([]byte(resp), remote); err != nil {
 		slog.Warn("sip response failed", "code", code, "err", err)
+		return
 	}
+	slog.Info("sip trace out", "at", time.Now().Format("15:04:05.000"), "to", remote.String(), "line", fmt.Sprintf("SIP/2.0 %d %s", code, reason), "cseq", parseHeader(req, "CSeq"), "callid", parseHeader(req, "Call-ID"))
 }
 
 // buildResponse renders a SIP response to req. An empty tag mints a fresh
