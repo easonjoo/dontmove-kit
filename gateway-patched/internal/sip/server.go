@@ -36,6 +36,11 @@ type Server struct {
 	linphonePushFrom string
 	pushMu          sync.Mutex
 	pushRegs        map[string]pushParams
+
+	// 已处理的 MESSAGE 事务（Call-ID|CSeq → 时间）。UDP 重传与首次完全同
+	// 头，不去重就会把同一条聊天转发成多条真实短信（2026-09-11 实测：
+	// 一条"你好啊"被 Linphone 重传两次、对面收到两条；打字指示 XML 同样翻倍）。
+	seenMessages sync.Map
 }
 
 func NewServer(listenAddr string, registrar *Registrar, auth *Auth, modemCtl *modem.ActiveCallAdapter, audio modem.VoiceAudio) *Server {
@@ -699,6 +704,14 @@ func parseHeader(msg, name string) string {
 // baresip-based and sends SMS as SIP instant messages) over the cellular
 // modem via the attached SMS sender (§30). Responds 200 on acceptance,
 // 500 when no SMS engine is wired or the modem rejects the submission.
+//
+// 三个防护（2026-09-11，起因是"对面收到乱码且重复两次"）：
+//  1. 重传去重：Linphone 对 UDP MESSAGE 在 0.5s/1s/2s 处重发（网关要等
+//     短信提交完才应答，必然超时），相同 Call-ID+CSeq 只提交一次短信；
+//  2. 打字指示过滤：RFC 3994 <isComposing> XML 是客户端打字时自动发的
+//     状态通知，转发成短信就是对面上百字符的乱码长文；
+//  3. 先应答后提交：200 OK 立即回，短信提交放后台——客户端收不到及时
+//     应答才会重传，从源头消灭重传。
 func (s *Server) handleMessageRequest(msg string, remote *net.UDPAddr) {
 	if s.sendSMS == nil {
 		slog.Warn("sip message rejected", "reason", "SMS engine not attached")
@@ -727,15 +740,43 @@ func (s *Server) handleMessageRequest(msg string, remote *net.UDPAddr) {
 		s.sendResponse(remote, msg, 400, "Bad Request", "", "")
 		return
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-	defer cancel()
-	if err := s.sendSMS(ctx, destination, body); err != nil {
-		slog.Warn("sip message send failed", "to", destination, "err", err)
-		s.sendResponse(remote, msg, 500, "Server Error", "", "")
+	// 打字状态指示（RFC 3994）不是聊天内容，直接丢弃。
+	if strings.Contains(body, "<isComposing") {
+		slog.Info("sip message typing indicator dropped", "to", destination, "length", len(body))
+		s.sendResponse(remote, msg, 200, "OK", "", "")
 		return
 	}
-	slog.Info("sip message sent", "to", destination, "length", len(body))
+	// UDP 重传去重：同 Call-ID+CSeq 只提交一次。
+	callID := parseHeader(msg, "Call-ID")
+	cseq := parseHeader(msg, "CSeq")
+	if callID != "" {
+		key := callID + "|" + cseq
+		if _, dup := s.seenMessages.LoadOrStore(key, time.Now()); dup {
+			slog.Info("sip message retransmission dropped", "to", destination, "call", callID, "cseq", cseq)
+			s.sendResponse(remote, msg, 200, "OK", "", "")
+			return
+		}
+		// 顺手清理 2 分钟前的旧事务，防止 map 无限增长。
+		cutoff := time.Now().Add(-2 * time.Minute)
+		s.seenMessages.Range(func(k, v any) bool {
+			if ts, ok := v.(time.Time); ok && ts.Before(cutoff) {
+				s.seenMessages.Delete(k)
+			}
+			return true
+		})
+	}
+	// 先回 200 再提交：让客户端立刻收到应答，不再触发 UDP 重传。
+	// 提交失败只能记日志（对端已收到 200，无法再报错）。
 	s.sendResponse(remote, msg, 200, "OK", "", "")
+	go func() {
+		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+		defer cancel()
+		if err := s.sendSMS(ctx, destination, body); err != nil {
+			slog.Warn("sip message send failed", "to", destination, "err", err)
+			return
+		}
+		slog.Info("sip message sent", "to", destination, "length", len(body))
+	}()
 }
 
 func (s *Server) handleRegister(msg string, remote *net.UDPAddr) {
@@ -816,6 +857,12 @@ func (s *Server) handleInvite(msg string, remote *net.UDPAddr) {
 	peer := extractSIPUser(to)
 	if peer == "" {
 		peer = "unknown"
+	}
+	// 记录客户端 SDP offer 摘要：m= 行 + 加密/ICE 相关属性行。呼出秒断时
+	// 由此判断是否媒体加密强制（offer 带 a=crypto/SAVP 而应答是纯 AVP，
+	// Linphone 会 ACK 后立刻 BYE）或编解码不交集。
+	if body := sdpOfferSummary(msg); body != "" {
+		slog.Info("sip invite offer", "peer", peer, "content_type", parseHeader(msg, "Content-Type"), "sdp", body)
 	}
 	username := extractSIPUser(from)
 	if _, ok := s.registrar.Get(username); !ok {
@@ -1353,6 +1400,29 @@ func extractSDP(msg string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// sdpOfferSummary 提取 SDP 中与"客户端为什么秒挂"相关的行：m= 媒体行
+// （协议是 RTP/AVP 还是 SAVP/SAVPF）、rtpmap、加密与 ICE 属性。用于呼出
+// 接通瞬间被客户端 ACK+BYE 的诊断（2026-09-11）。
+func sdpOfferSummary(msg string) string {
+	sdp := extractSDP(msg)
+	if sdp == "" {
+		return ""
+	}
+	var keep []string
+	for _, line := range strings.Split(sdp, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "m=") || strings.HasPrefix(line, "a=rtpmap") ||
+			strings.HasPrefix(line, "a=crypto") || strings.Contains(line, "SAVP") ||
+			strings.HasPrefix(line, "a=setup") || strings.HasPrefix(line, "a=fingerprint") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, " | ")
 }
 func parseSDPRTP(sdp string) (string, int) {
 	var ip string
