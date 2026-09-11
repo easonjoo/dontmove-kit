@@ -2,9 +2,11 @@ package sip
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -25,6 +27,13 @@ import (
 //
 // 注意：请求必须同时携带 x-api-key 与 From（Key 所属账号的 SIP 地址），
 // 缺 From 会报 401 Invalid API Key。
+//
+// ⚠ Key 与出口 IP 绑定（AuthenticateKey.php：apiKey->ip == request->ip()，
+// 面板生成 Key 时无条件绑定 $request->ip()，无法关闭）。双栈网络下
+// macOS 的 IPv6 隐私临时地址会轮换，导致同一把 Key 时 200 时 401。
+// 因此这里强制走 IPv4（CGNAT 公网出口远比 v6 临时地址稳定）——
+// 生成 Key 时也必须让浏览器走 IPv4（临时关闭 v6 再生成）。
+//
 // Key 过期的症状：push 返回 401/403 —— 重新在 Mac 上登录
 // subscribe.linphone.org 生成一个即可（见 set-linphone-push.sh）。
 
@@ -128,14 +137,24 @@ func pickCallPrid(prid string) string {
 	return tokens[0]
 }
 
+// linphoneDialer 强制 IPv4：见文件头关于 Key-IP 绑定的说明。
+var linphoneDialer = &net.Dialer{Timeout: 8 * time.Second}
+
 var linphoneHTTPClient = &http.Client{
 	// 直连（不经系统代理）：yakpush.go 同款理由，代理会 EOF/502。
-	Timeout:   10 * time.Second,
-	Transport: &http.Transport{Proxy: nil},
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return linphoneDialer.DialContext(ctx, "tcp4", addr)
+		},
+	},
 }
 
 // sendLinphonePush 对一组注册参数发起一次 "call" 推送。
 // 阻塞至 HTTP 返回（≤10s），由调用方决定放不放 goroutine。
+// 401/403 自动重试一次：FlexiAPI 后端偶发地对有效 Key 返回
+// Invalid API Key（多节点/缓存不一致），重试即可通过。
 func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 	key := s.linphonePushKey
 	if key == "" || !pp.valid() {
@@ -155,36 +174,48 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", key)
-	// FlexiAPI 要求 From = Key 所属账号的 SIP 地址；缺失时报 401 Invalid API Key。
-	if s.linphonePushFrom != "" {
-		req.Header.Set("From", s.linphonePushFrom)
-	}
-	resp, err := linphoneHTTPClient.Do(req)
-	if err != nil {
-		slog.Warn("linphonepush failed", "err", err)
-		return
-	}
-	defer resp.Body.Close()
-	detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	fields := []any{"status", resp.Status}
-	if len(detail) > 0 {
-		fields = append(fields, "body", strings.TrimSpace(string(detail)))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		slog.Warn("linphonepush rejected", fields...)
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			slog.Warn("linphonepush hint: API Key 无效/过期/IP 变化 —— 在 Mac 上重新登录 subscribe.linphone.org 生成并更新 ~/.cellbridge/linphone_push_key")
+
+	try := func() (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
 		}
-		return
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("x-api-key", key)
+		// FlexiAPI 要求 From = Key 所属账号的 SIP 地址；缺失时报 401 Invalid API Key。
+		if s.linphonePushFrom != "" {
+			req.Header.Set("From", s.linphonePushFrom)
+		}
+		return linphoneHTTPClient.Do(req)
 	}
-	slog.Info("linphonepush sent", fields...)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		resp, err := try()
+		if err != nil {
+			slog.Warn("linphonepush failed", "err", err)
+			return
+		}
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body.Close()
+		fields := []any{"status", resp.Status}
+		if len(detail) > 0 {
+			fields = append(fields, "body", strings.TrimSpace(string(detail)))
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			slog.Info("linphonepush sent", fields...)
+			return
+		}
+		slog.Warn("linphonepush rejected", append(fields, "attempt", attempt)...)
+		if resp.StatusCode != 401 && resp.StatusCode != 403 {
+			return
+		}
+		if attempt == 1 {
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		slog.Warn("linphonepush hint: Key 与当前出口 IP 不匹配或已过期 —— 关闭 Mac 的 IPv6 后在 subscribe.linphone.org 重新生成 Key（见 README）")
+	}
 }
 
 // pushMu/pushRegs 保护按用户名缓存的推送参数；handleRegister 写，
