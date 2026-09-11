@@ -103,6 +103,40 @@ func (s *Server) AttachSMS(send func(ctx context.Context, to, body string) error
 	s.sendSMS = send
 }
 
+// ForwardSMS delivers an inbound cellular SMS to every registered SIP client
+// as a SIP MESSAGE (RFC 3428). Linphone renders these as chat messages, so
+// the phone finally sees SIM texts it cannot otherwise receive — the SMS
+// channel is cellular-only and never enters the SIP client on its own.
+func (s *Server) ForwardSMS(peer, body string) {
+	if s.conn == nil || s.registrar == nil || body == "" {
+		return
+	}
+	caller := peer
+	if caller == "" {
+		caller = "unknown"
+	}
+	sent := 0
+	for _, reg := range s.registrar.All() {
+		remote := contactAddr(reg.Contact)
+		if remote == nil {
+			continue
+		}
+		local := s.localIPFor(remote)
+		from := fmt.Sprintf("<sip:%s@%s>;tag=sms%d", caller, local, time.Now().UnixNano()%1000000)
+		callID := fmt.Sprintf("sms-%d-%s", time.Now().UnixNano(), reg.Username)
+		msg := fmt.Sprintf("MESSAGE sip:%s@%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=z9hG4bKsms%d;rport\r\nMax-Forwards: 70\r\nFrom: %s\r\nTo: <sip:%s@%s>\r\nCall-ID: %s\r\nCSeq: 1 MESSAGE\r\nContact: <sip:cellbridge@%s:5060>\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+			reg.Username, local, local, time.Now().UnixNano()%100000, from, reg.Username, local, callID, local, len(body), body)
+		if _, err := s.conn.WriteToUDP([]byte(msg), remote); err != nil {
+			slog.Warn("sms forward failed", "user", reg.Username, "peer", peer, "err", err)
+			continue
+		}
+		sent++
+	}
+	if sent > 0 {
+		slog.Info("sms forwarded to clients", "peer", peer, "clients", sent, "length", len(body))
+	}
+}
+
 func (s *Server) Start(ctx context.Context) error {
 	addr, err := net.ResolveUDPAddr("udp", s.listenAddr)
 	if err != nil {

@@ -61,6 +61,8 @@ type Server struct {
 	Recordings        *recording.Manager
 	PushSender        push.Sender
 	YakPushToken      string // official YakPhone push token (push.yakteam.com)
+	// InboundSMSNotifier 把入站短信交给 SIP 服务转发给客户端（Linphone 聊天页）。
+	InboundSMSNotifier func(peer, body string)
 	lineMu            sync.RWMutex
 	webrtcMu          sync.Mutex
 	webrtcCalls       map[string]*webrtc.Session
@@ -1637,6 +1639,11 @@ func (s *Server) HandleMessage(message *db.Message) {
 	}
 	if s.Events != nil {
 		s.Events.Publish(message.SyncSeq, "message.created", s.messageResponseFromDB(*message))
+	}
+	// 把入站短信实时转发给 SIP 客户端（Linphone 聊天页），蜂窝短信
+	// 本身永不进入 SIP 客户端，不转发手机上就永远看不到。
+	if message.Direction == "inbound" && s.InboundSMSNotifier != nil {
+		s.InboundSMSNotifier(message.Peer, message.Body)
 	}
 	s.sendMessagePush(*message)
 }
