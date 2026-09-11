@@ -8,11 +8,13 @@ __pycache__/
 venv/
 
 # 构建产物（install.sh / rebuild-gateway.sh 生成）
-cellbridge-gateway
-cellbridge-gateway.new
-cellbridge-gateway.bak-*
-voice-audio-bridge
-CellBridge Console.app/
+# 必须锚定仓库根目录：裸写 cellbridge-gateway 会把 gateway-patched/cmd/cellbridge-gateway/
+# 源码目录也一起忽略掉（这正是补丁版 cmd/ 长期未入库的原因）。
+/cellbridge-gateway
+/cellbridge-gateway.new
+/cellbridge-gateway.bak-*
+/voice-audio-bridge
+/CellBridge Console.app/
 
 # 运行时数据（含个人敏感信息：手机号/通话记录，切勿提交）
 .cellbridge/
