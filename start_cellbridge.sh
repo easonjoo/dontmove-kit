@@ -50,7 +50,8 @@ SIP_USER2="${SIP_USER2:-sheldon}"
 
 mkdir -p "$RUN" "$DATA" "$LOG"
 
-# SIP 口令：不再硬编码弱口令。优先级：环境变量 > 持久化文件 > 首次随机生成。
+# SIP 口令：不再硬编码弱口令（仓库公开后 cellbridge-idoer 等于明文）。
+# 优先级：环境变量 SIP_PASS/SIP_PASS2 > 持久化文件 ~/.cellbridge/run/sip-passwords > 首次随机生成。
 PASS_FILE="$RUN/sip-passwords"
 _read_pass() { # _read_pass <key>
   [ -f "$PASS_FILE" ] || return 1
@@ -99,7 +100,7 @@ if [ "${1:-}" = "stop" ]; then
   for pat in "cellbridge-gateway" "voice-audio-bridge" "at_pty_bridge.py" "[r]oute-rearm.sh"; do
     pkill -f "$pat" 2>/dev/null && echo "已停止 $pat"
   done
-  # voice-audio-bridge 卡在 FIFO open() 时 SIGTERM 杀不死，补 SIGKILL
+  # voice-audio-bridge 卡在 FIFO open() 时 SIGTERM 杀不死，等 1s 后补 SIGKILL
   sleep 1
   for pat in "voice-audio-bridge" "cellbridge-gateway" "at_pty_bridge.py"; do
     pkill -9 -f "$pat" 2>/dev/null && echo "强制清理残留 $pat（SIGKILL）"
@@ -193,13 +194,9 @@ verify_all() {
 i=0
 while true; do
   v=\$(\$T get "\$PROBE" 2>/dev/null)
-  if [ "\$v" != "1" ]; then
-    apply_all
-  elif [ \$((i % 6)) -eq 0 ]; then
-    verify_all
-  fi
-  i=\$((i + 1))
-  sleep 10
+  if [ "\$v" != "1" ]; then apply_all
+  elif [ \$((i % 6)) -eq 0 ]; then verify_all; fi
+  i=\$((i + 1)); sleep 10
 done
 EOF
 chmod +x /data/voice-route-watchdog.sh' 2>/dev/null
@@ -217,17 +214,14 @@ chmod +x /data/voice-route-watchdog.sh' 2>/dev/null
   i=0
   while [ "$i" -lt 24 ]; do
     pgrep -f "[r]oute-rearm.sh" > /dev/null 2>&1 || break
-    sleep 0.25
-    i=$((i + 1))
+    sleep 0.25; i=$((i + 1))
   done
   HB="$RUN/logs/route-rearm.heartbeat"
   rm -f "$HB"
   nohup "$DIR/route-rearm.sh" > /dev/null 2>&1 &
   i=0
   while [ "$i" -lt 20 ]; do
-    sleep 0.5
-    [ -f "$HB" ] && break
-    i=$((i + 1))
+    sleep 0.5; [ -f "$HB" ] && break; i=$((i + 1))
   done
   if [ -f "$HB" ]; then
     echo "    通话后自动重挂路由会话 已启用（心跳正常，日志 route-rearm.log）"
@@ -287,10 +281,8 @@ TAILNET_IP=""; TAILNET_NAME=""
 if [ -n "$TS_CLI" ]; then
   _ts=$(printf '%s' "$("$TS_CLI" status --json 2>/dev/null)" | "$PY3" -c '
 import json,sys
-try:
-    d=json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
 ips=(d.get("Self") or {}).get("TailscaleIPs") or []
 print(next((i for i in ips if ":" not in i), ""))
 print(((d.get("Self") or {}).get("DNSName") or "").rstrip("."))
@@ -368,7 +360,7 @@ done
 if ! kill -0 $GWPID 2>/dev/null; then
   echo "网关启动失败，日志："; tail -20 "$LOG/gateway.log"; exit 1
 fi
-[ "$READY" = "1" ] || echo "    警告：网关进程在，但 health 接口 20s 内未就绪"
+[ "$READY" = "1" ] || echo "    警告：网关进程在，但 health 接口 20s 内未就绪（可能仍在初始化，或 8787 被占用）"
 
 echo ""
 echo "═══════════════════════════════════════════════"
