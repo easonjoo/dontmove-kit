@@ -238,7 +238,13 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 		}
 		resp, err := try(client)
 		if err != nil {
+			// 单栈网络故障（如 v6 临时地址正在轮换）不该放弃整次推送：
+			// 换另一条栈继续重试。
 			slog.Warn("linphonepush failed", "stack", stack, "err", err)
+			if attempt < 4 {
+				time.Sleep(time.Duration(attempt) * 400 * time.Millisecond)
+				continue
+			}
 			return
 		}
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

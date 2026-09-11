@@ -115,6 +115,18 @@ func (s *Server) ForwardSMS(peer, body string) {
 	if caller == "" {
 		caller = "unknown"
 	}
+	// SIP 头注入防护：peer 来自蜂窝 PDU，去掉可能破坏 From URI 的字符
+	//（字母数字与 +-. 之外的一律剔除；字母号码类发件人如 "CHINAUNICOM" 也合法）。
+	caller = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '+', r == '-', r == '.':
+			return r
+		}
+		return -1
+	}, caller)
+	if caller == "" {
+		caller = "unknown"
+	}
 	sent := 0
 	for _, reg := range s.registrar.All() {
 		remote := contactAddr(reg.Contact)
