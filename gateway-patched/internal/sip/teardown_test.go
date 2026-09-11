@@ -18,10 +18,10 @@ import (
 // was never even found. The phone stayed on the call screen after the audio
 // had already stopped.
 
-const clientInvite = "INVITE sip:10010@100.115.140.25 SIP/2.0\r\n" +
+const clientInvite = "INVITE sip:10010@100.64.0.1 SIP/2.0\r\n" +
 	"Via: SIP/2.0/UDP 100.86.10.78:51122;branch=z9hG4bK09fd;rport\r\n" +
 	"From: <sip:iphone@100.86.10.78>;tag=cliTag99\r\n" +
-	"To: <sip:10010@100.115.140.25>\r\n" +
+	"To: <sip:10010@100.64.0.1>\r\n" +
 	"Call-ID: 8f1a0b2c3d4e5f60\r\n" +
 	"CSeq: 1 INVITE\r\n" +
 	"Contact: <sip:iphone@100.86.10.78:51122>\r\n" +
@@ -33,7 +33,7 @@ func outboundPlan() byePlan {
 	return byePlan{
 		remote:     &net.UDPAddr{IP: net.ParseIP("100.86.10.78"), Port: 51122},
 		reqURI:     "sip:iphone@100.86.10.78:51122",
-		from:       "<sip:10010@100.115.140.25>;tag=cbTag123",
+		from:       "<sip:10010@100.64.0.1>;tag=cbTag123",
 		to:         "<sip:iphone@100.86.10.78>;tag=cliTag99",
 		callID:     "8f1a0b2c3d4e5f60",
 		inviteCSeq: 1,
@@ -45,17 +45,17 @@ func outboundPlan() byePlan {
 // reproduces the dialog it established: same Call-ID, our From tag, the
 // client's To tag, and a CSeq above anything the client sent.
 func TestTeardownConnectedCallSendsBye(t *testing.T) {
-	method, msg := teardownMessage("outbound", "active", "cbTag123", outboundPlan(), "100.115.140.25")
+	method, msg := teardownMessage("outbound", "active", "cbTag123", outboundPlan(), "100.64.0.1")
 	if method != "BYE" {
 		t.Fatalf("a connected call must be ended with BYE, got %q", method)
 	}
 	for _, want := range []string{
 		"BYE sip:iphone@100.86.10.78:51122 SIP/2.0",
-		"From: <sip:10010@100.115.140.25>;tag=cbTag123",
+		"From: <sip:10010@100.64.0.1>;tag=cbTag123",
 		"To: <sip:iphone@100.86.10.78>;tag=cliTag99",
 		"Call-ID: 8f1a0b2c3d4e5f60",
 		"CSeq: 2 BYE",
-		"Via: SIP/2.0/UDP 100.115.140.25:5060",
+		"Via: SIP/2.0/UDP 100.64.0.1:5060",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("BYE missing %q\n--- got ---\n%s", want, msg)
@@ -70,13 +70,13 @@ func TestTeardownRingingInboundSendsCancel(t *testing.T) {
 	plan := byePlan{
 		remote:       &net.UDPAddr{IP: net.ParseIP("100.86.10.78"), Port: 54434},
 		reqURI:       "sip:iphone@100.86.10.78:54434",
-		from:         "<sip:15688525123@100.115.140.25>;tag=cb499fba6f",
-		to:           "<sip:iphone@100.115.140.25>",
+		from:         "<sip:13800138000@100.64.0.1>;tag=cb499fba6f",
+		to:           "<sip:iphone@100.64.0.1>",
 		callID:       "in-499fba6f-80cd-4269-b63b-2f4575dbc97a",
 		inviteCSeq:   1,
 		inviteBranch: "z9hG4bK499fba6f",
 	}
-	method, msg := teardownMessage("inbound", "init", "", plan, "100.115.140.25")
+	method, msg := teardownMessage("inbound", "init", "", plan, "100.64.0.1")
 	if method != "CANCEL" {
 		t.Fatalf("a still-ringing inbound call must be cancelled, got %q", method)
 	}
@@ -96,7 +96,7 @@ func TestTeardownRingingInboundSendsCancel(t *testing.T) {
 // error, or the client keeps ringing until its own transaction timer expires
 // (64s) for a call that is already dead.
 func TestTeardownUnansweredOutboundSendsError(t *testing.T) {
-	method, msg := teardownMessage("outbound", "dialing", "cbTag123", outboundPlan(), "100.115.140.25")
+	method, msg := teardownMessage("outbound", "dialing", "cbTag123", outboundPlan(), "100.64.0.1")
 	if method != "480" {
 		t.Fatalf("an unanswered outbound call must be answered with 480, got %q", method)
 	}
@@ -108,7 +108,7 @@ func TestTeardownUnansweredOutboundSendsError(t *testing.T) {
 	for _, want := range []string{
 		"branch=z9hG4bK09fd",
 		"CSeq: 1 INVITE",
-		"To: <sip:10010@100.115.140.25>;tag=cbTag123",
+		"To: <sip:10010@100.64.0.1>;tag=cbTag123",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("480 missing %q\n--- got ---\n%s", want, msg)

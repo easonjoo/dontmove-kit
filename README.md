@@ -66,7 +66,7 @@ cd dontmove-kit
 |---|---|
 | SIP 服务器 | Mac 的局域网 IP（或 Tailscale IP `100.x.y.z`）+ 端口 `5060` |
 | 用户名 | `iphone` |
-| 密码 | `cellbridge-<你的Mac用户名>`（如 `cellbridge-idoer`） |
+| 密码 | `cellbridge-<你的Mac用户名> |
 | 传输 | UDP |
 
 锁屏来电：在 YakPhone 里复制 PushKit token，跑 `./set-push-token.sh` 写入网关。

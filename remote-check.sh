@@ -97,6 +97,6 @@ fi
 
 echo
 echo "手机侧这样设（改完不用动 Mac）："
-echo "  SIP 服务器 = ${TSIP:-<tailnet IP>}:5060   用户名 iphone / 密码 cellbridge-idoer"
+echo "  SIP 服务器 = ${TSIP:-<tailnet IP>}:5060   用户名 iphone / 密码 cellbridge-$(whoami)"
 echo "  验证远程：手机关 Wi-Fi、只留蜂窝 + Tailscale VPN 打开，再打一通"
 echo "  延迟自查：tailscale ping <手机 tailnet IP>（出现 direct 才快，relay 会明显延迟）"

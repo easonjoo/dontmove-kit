@@ -68,7 +68,7 @@ if [ -f "$LOG" ]; then
     UP=$(head -1 "$LOG" | awk '{print $1" "$2}')
     bad "本次启动（$UP）后未收到任何注册 → YakPhone 当前没连上"
     printf '  · 前台打开 YakPhone 应立刻出现 sip register；若一直不来，检查\n'
-    printf '    服务器地址填的是否为下方第 8 节的局域网 IP、账号 iphone/cellbridge-idoer\n'
+    printf '    服务器地址填的是否为下方第 8 节的局域网 IP、账号 iphone/cellbridge-$(whoami)\n'
   fi
 fi
 
@@ -111,7 +111,7 @@ fi
 head_ "8. YakPhone 该填的服务器地址"
 for IF in en0 en1; do
   IP=$(ipconfig getifaddr $IF 2>/dev/null || true)
-  [ -n "$IP" ] && printf '  %s: %s:5060   账号 iphone / cellbridge-idoer\n' "$IF" "$IP"
+  [ -n "$IP" ] && printf '  %s: %s:5060   账号 iphone / cellbridge-$(whoami)\n' "$IF" "$IP"
 done
 TL=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || tailscale ip -4 2>/dev/null || true)
 [ -n "$TL" ] && printf '  tailscale: %s:5060\n' "$(printf '%s' "$TL" | head -1)"

@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>        <string>local.idoer.cellbridge-widget</string>
+    <key>CFBundleIdentifier</key>        <string>local.cellbridge.widget</string>
     <key>CFBundleName</key>              <string>CellBridgeWidget</string>
     <key>CFBundleExecutable</key>        <string>CellBridgeWidget</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>

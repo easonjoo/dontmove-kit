@@ -7,7 +7,7 @@
 #   ./set-linphone-push.sh --test <pn_prid>   # 用当前 Key 发一条测试推送（type=background）
 #
 # Key 的获取：在 **Mac 上**打开 https://subscribe.linphone.org 并登录
-# （免费 sip.linphone.org 账号，如 sheldonjoo）→ My Account → API Key → Manage
+# （免费 sip.linphone.org 账号）→ My Account → API Key → Manage
 # → 生成/复制。务必在 Mac 上操作：生成的 Key 绑定当前出口 IP，
 # 网关是从这台 Mac 调推送 API 的，IP 不一致会被 403。
 # Key 闲置一段时间会被服务端回收，过期重生成一次即可。
@@ -35,7 +35,7 @@ case "${1:-}" in
     URL="https://subscribe.linphone.org/api/push_notification"
     [ -f "$URL_FILE" ] && URL=$(cat "$URL_FILE")
     PRID="${2:?用法: ./set-linphone-push.sh --test <pn_prid>}"
-    FROM="sip:$(cat "$HOME/.cellbridge/linphone_push_from" 2>/dev/null || echo sheldonjoo@sip.linphone.org)"
+    FROM="sip:$(cat "$HOME/.cellbridge/linphone_push_from" 2>/dev/null || echo yourname@sip.linphone.org)"
     echo "POST $URL (From: $FROM) ..."
     curl -sS -X POST "$URL" \
       -H "Content-Type: application/json" -H "Accept: application/json" \
@@ -48,7 +48,7 @@ case "${1:-}" in
   *)
     mkdir -p "$HOME/.cellbridge"
     printf '%s' "$1" > "$KEY_FILE" && chmod 600 "$KEY_FILE"
-    FROM="${2:-sheldonjoo@sip.linphone.org}"
+    FROM="${2:-yourname@sip.linphone.org}"
     printf '%s' "$FROM" > "$HOME/.cellbridge/linphone_push_from" && chmod 600 "$HOME/.cellbridge/linphone_push_from"
     [ -n "${2:-}" ] && printf '%s' "$2" > "$URL_FILE"
     echo "已写入 $KEY_FILE（重启 ./start_cellbridge.sh 后生效）"

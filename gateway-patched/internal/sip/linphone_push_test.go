@@ -37,7 +37,7 @@ func TestParsePushParamsLegacy(t *testing.T) {
 
 func TestParsePushParamsAbsent(t *testing.T) {
 	// YakPhone / 普通 SIP 客户端：没有 pn-*，绝不能误报
-	contact := `<sip:iphone@192.168.31.14:5060>`
+	contact := `<sip:iphone@192.168.1.50:5060>`
 	if _, ok := parsePushParams(contact); ok {
 		t.Fatal("expected no push params")
 	}
