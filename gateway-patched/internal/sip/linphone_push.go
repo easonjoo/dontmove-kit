@@ -142,9 +142,13 @@ var linphoneDialer = &net.Dialer{Timeout: 8 * time.Second}
 
 var linphoneHTTPClient = &http.Client{
 	// 直连（不经系统代理）：yakpush.go 同款理由，代理会 EOF/502。
+	// DisableKeepAlives：FlexiAPI 的 LB 节点间数据不一致（实测同一 Key 在
+	// 部分节点恒 401），keep-alive 会把后续请求都黏在同一条连接（同一节点）
+	// 上，401 成簇；禁用后每次推送/重试都新建连接重新选节点。
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		Proxy: nil,
+		Proxy:            nil,
+		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return linphoneDialer.DialContext(ctx, "tcp4", addr)
 		},
