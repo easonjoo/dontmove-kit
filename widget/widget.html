@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh" data-page-node-id="FJOxxQubo40OIbASzTD0Id">
+<head data-page-node-id="ouHCbo779WRsMntSErdtDd">
+<meta charset="utf-8" data-page-node-id="JityPmFB7iiLcDLZN1A6dD">
+<style>
+  :root{
+    --ok:#34d75b; --warn:#ffd60a; --bad:#ff4d3d;
+    --track:#26262b; --card:#0b0b0d; --text:#f2f2f4; --dim:#98989f;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;user-select:none;cursor:default}
+  html,body{width:100%;height:100%;background:var(--card);overflow:hidden;
+    font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+
+  /* ===== 右缘竖条 ===== */
+  #strip{position:absolute;right:0;top:0;bottom:0;width:128px;
+    display:flex;flex-direction:column;align-items:center;justify-content:space-evenly}
+  .gauge{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .gauge svg{width:68px;height:68px;transform:rotate(-90deg)}
+  .ring-bg{fill:none;stroke:var(--track);stroke-width:5.5}
+  .ring-fg{fill:none;stroke-width:5.5;stroke-linecap:round;
+    transition:stroke-dashoffset .7s cubic-bezier(.3,.7,.3,1), stroke .4s}
+  .gauge .val{font-size:15px;font-weight:600;color:var(--text);letter-spacing:.3px}
+  .gauge .val.down{color:var(--bad)}
+
+  /* ===== 悬停明细 ===== */
+  #pop{position:absolute;top:14px;right:142px;width:296px;
+    background:var(--card);border-radius:20px;padding:16px 18px 12px;
+    opacity:0;transform:translateX(16px) scale(.96);pointer-events:none;
+    transition:opacity .18s,transform .18s;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  body.show #pop{opacity:1;transform:none;pointer-events:auto}
+  #pop h1{font-size:15px;font-weight:700;color:var(--text);
+    display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  #pop h1 .glyph{color:#e8734a;font-size:17px}
+  #pop .upd{margin-left:auto;font-size:10.5px;color:var(--dim);font-weight:400}
+  .row{margin:9px 0}
+  .row .t{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}
+  .row .t .l{color:var(--dim);font-size:11.5px}
+  .row .t .r{color:var(--text);font-weight:600;font-size:11.5px}
+  .bar{height:5px;border-radius:3px;background:var(--track);overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px;transition:width .55s cubic-bezier(.3,.7,.3,1),background .3s}
+  .foot{display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.07)}
+  .foot a{flex:1;text-align:center;font-size:11.5px;color:var(--dim);text-decoration:none;
+    padding:6px 0;border-radius:9px;background:rgba(255,255,255,.07)}
+  .foot a:hover{color:var(--text);background:rgba(255,255,255,.14)}
+</style>
+</head>
+<body data-page-node-id="87dcEhgBAKE1D9bgan2Dpl">
+  <div id="strip" data-page-node-id="RiR5RObjqAfzRtCcjybJGW">
+    <div class="gauge" data-page-node-id="EPTQmey4AQ1Tf0xGCSXfRU">
+      <svg viewBox="0 0 68 68" data-page-node-id="MMwDvbAd8guoe6D5tFODHm"><circle class="ring-bg" cx="34" cy="34" r="29" data-page-node-id="a9JG6ZZeLRXtionO2gnDOC"/>
+        <circle class="ring-fg" id="r-gw" cx="34" cy="34" r="29" data-page-node-id="Gz8Eqf4P7kvqXRfo4IkqL0"/></svg>
+      <div class="val" id="v-gw" data-page-node-id="G8BA5wDOnnpSWeNqBCfVKq">—</div>
+    </div>
+    <div class="gauge" data-page-node-id="woYknx3r1hAti8Pq2VbPBZ">
+      <svg viewBox="0 0 68 68" data-page-node-id="tEGAEkzMAJWA2JtsalEKxi"><circle class="ring-bg" cx="34" cy="34" r="29" data-page-node-id="Ao8sLYZqMcOivnuftdoP46"/>
+        <circle class="ring-fg" id="r-voice" cx="34" cy="34" r="29" data-page-node-id="VubzdplZX7HwoQoN6ZFoNX"/></svg>
+      <div class="val" id="v-voice" data-page-node-id="BCQGoh0hsQrBM520subvA1">—</div>
+    </div>
+    <div class="gauge" data-page-node-id="DV7rTddJFGDxPM0CBwis7K">
+      <svg viewBox="0 0 68 68" data-page-node-id="1xfEM53tDVtF8u2Aweps5d"><circle class="ring-bg" cx="34" cy="34" r="29" data-page-node-id="SQ7ipCyoq615RT3x4CULrs"/>
+        <circle class="ring-fg" id="r-ts" cx="34" cy="34" r="29" data-page-node-id="V4j0T7KWzgsD7Uczva61sA"/></svg>
+      <div class="val" id="v-ts" data-page-node-id="vlgSxw2kuO6Cn2ukZs7lrn">—</div>
+    </div>
+  </div>
+
+  <div id="pop" data-page-node-id="Z5uszYN7ikOjUE0YDaTYpO">
+    <h1 data-page-node-id="0G91uhfCwD7sThnMOvJOPO"><span class="glyph" data-page-node-id="47SITxeYchhuoYIo772z0m">✳</span>CellBridge<span class="upd" id="upd" data-page-node-id="7hd2RFtWcqyXg1FF5Kr0ox">—</span></h1>
+    <div class="row" data-page-node-id="2iDEQNZBRy31wwH9lxSVRs"><div class="t" data-page-node-id="f3NWNDA6OJ9iMIBHOQLVEC"><span class="l" data-page-node-id="FAeSqhMr2ixEjw0VUoBzj6">网关 API (:8787)</span><span class="r" id="s-gw" data-page-node-id="aPAYsnZQxndZ6tabjTGtF6">—</span></div>
+      <div class="bar" data-page-node-id="KCFfM92yOvAKO4HM6Rzw6a"><i id="b-gw" data-page-node-id="nkvGDhFrW70GTHB484sY6O"></i></div></div>
+    <div class="row" data-page-node-id="NfPd36bx1e81YqB2OlKH3e"><div class="t" data-page-node-id="QACGVkHWuJosNUEQZy9VHU"><span class="l" data-page-node-id="5iLoUFJ5WP00euGUDVo3qZ">SIP 监听 (:5060)</span><span class="r" id="s-sip" data-page-node-id="kQkvWNVPGldwWQHlOgj7Ez">—</span></div>
+      <div class="bar" data-page-node-id="ioXNmoAgg7r3KkD5TycGgU"><i id="b-sip" data-page-node-id="owBarHkA5wcJF0AAfWG6Ue"></i></div></div>
+    <div class="row" data-page-node-id="trOLFBC4iTTUnzsDkw5Gv0"><div class="t" data-page-node-id="AwaSyxkCqHK7GdgsIn0ysM"><span class="l" data-page-node-id="789FGkwzFIQGM747KEOkp8">AT 串口桥</span><span class="r" id="s-at" data-page-node-id="fVroOpk8mDTvmNE2IjbPUn">—</span></div>
+      <div class="bar" data-page-node-id="76fhZs5dSexDSt8HNlN47Z"><i id="b-at" data-page-node-id="ThCHYaFPdSQy3fMr5BuRPO"></i></div></div>
+    <div class="row" data-page-node-id="f9uLW1jfCGVy0Wv9BYXvHO"><div class="t" data-page-node-id="bPpMH4479PTd6FdFzC0aBy"><span class="l" data-page-node-id="ThXaBNGDnTKSSniL385qaJ">音频桥</span><span class="r" id="s-vb" data-page-node-id="HbJnGGOE4gCZFXBmGrDA7o">—</span></div>
+      <div class="bar" data-page-node-id="4FzMuXTAfWT8By2Fbd5Tfl"><i id="b-vb" data-page-node-id="5BlIuEWNRy2Y6QcEqlDMmm"></i></div></div>
+    <div class="row" data-page-node-id="OJ4iLQOXdAHWF9g2L8EVEu"><div class="t" data-page-node-id="BMYD9Etn2hq43O7drQmo6P"><span class="l" data-page-node-id="8sqvwEZPFl5rifDE5ucm7e">重挂守护（心跳）</span><span class="r" id="s-rr" data-page-node-id="7EK8GacI5NVPUur0mOYOrk">—</span></div>
+      <div class="bar" data-page-node-id="Yb3d0aZdCPcAmp3sPcrKA0"><i id="b-rr" data-page-node-id="AfGDP38ljmSpZudVlFSZWD"></i></div></div>
+    <div class="row" data-page-node-id="DDQJ6Motgk5Wr3R7Qn312u"><div class="t" data-page-node-id="A0cC6MwL29fWo5fR09BeC6"><span class="l" data-page-node-id="12sEugE8quWpzcO9F4sFdi">模块侧 PCM 桥</span><span class="r" id="s-mb" data-page-node-id="8OzdFcK3UcK6pVj26EccJB">—</span></div>
+      <div class="bar" data-page-node-id="XEgfYUMfZOnF2Nxmx2qC4s"><i id="b-mb" data-page-node-id="QlsW9YDE5cUB61sWHOCArY"></i></div></div>
+    <div class="row" data-page-node-id="1mxcFxVTiHdQJoJY9We5e3"><div class="t" data-page-node-id="hutYzAUAcluPIWXJXbPICd"><span class="l" data-page-node-id="CpwC9QQIcs4AbUFKSgZQmD">Tailscale</span><span class="r" id="s-ts" data-page-node-id="8O7gcGUoWobsA7RZRjinp0">—</span></div>
+      <div class="bar" data-page-node-id="lzJ030eUpKe9m7tt4Bg83A"><i id="b-ts" data-page-node-id="sQLoBZW52Tr7eAWLOy9dfm"></i></div></div>
+    <div class="foot" data-page-node-id="29QnKeJREu1GwiC5ueAeeH">
+      <a href="#" onclick="send({cmd:'console'});return false" data-page-node-id="heAKX0nCMOshbo0GnZxAfH">控制台</a>
+      <a href="#" onclick="send({cmd:'quit'});return false" data-page-node-id="UtRvYyRy4Gqc0U5CqPoF7q">退出组件</a>
+    </div>
+  </div>
+
+<script>
+const CIRC = 2 * Math.PI * 29;
+const strip = document.getElementById('strip');
+let popped = false, expandTimer = null;
+
+function setRing(id, pct, color){
+  const el = document.getElementById(id);
+  el.style.strokeDasharray = CIRC;
+  el.style.strokeDashoffset = CIRC * (1 - pct / 100);
+  el.style.stroke = color;
+}
+function setBar(id, pct, color){
+  const el = document.getElementById(id);
+  el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  el.style.background = color;
+}
+function send(msg){ try{ window.webkit.messageHandlers.ctl.postMessage(msg); }catch(e){} }
+
+strip.addEventListener('mouseenter', () => {
+  document.body.classList.add('show'); send({cmd:'expand'});
+});
+strip.addEventListener('mouseleave', () => {
+  document.body.classList.remove('show');
+  clearTimeout(expandTimer);
+  expandTimer = setTimeout(()=>send({cmd:'shrink'}), 250);
+});
+
+function fmtAge(s){ if(s==null) return '—'; if(s<60) return s+'s'; if(s<3600) return Math.round(s/60)+'m'; return Math.round(s/3600)+'h'; }
+
+async function tick(){
+  let d;
+  try{ d = await (await fetch('/data')).json(); }
+  catch(e){
+    for(const id of ['gw','voice','ts']){ setRing('r-'+id,100,'var(--bad)');
+      document.getElementById('v-'+id).textContent='ERR'; }
+    return;
+  }
+
+  // ① 网关
+  const gwOk = d.gateway && d.gateway.ok;
+  const vg = document.getElementById('v-gw');
+  vg.textContent = gwOk ? 'OK' : 'DOWN'; vg.classList.toggle('down', !gwOk);
+  document.getElementById('s-gw').textContent = gwOk ? ('正常 · '+d.gateway.ms+'ms') : '无响应';
+  setRing('r-gw', 100, gwOk?'var(--ok)':'var(--bad)');
+  setBar('b-gw', gwOk?100:0, gwOk?'var(--ok)':'var(--bad)');
+
+  // SIP
+  const sipOk = d.sip && d.sip.ok;
+  document.getElementById('s-sip').textContent = sipOk ? '监听中' : '未监听';
+  setBar('b-sip', sipOk?100:0, sipOk?'var(--ok)':'var(--bad)');
+
+  // AT 桥
+  const atOk = d.at_bridge && d.at_bridge.ok && d.at_bridge.tty_ok;
+  document.getElementById('s-at').textContent = d.at_bridge && d.at_bridge.ok
+    ? (atOk ? ('运行 · '+(d.at_bridge.tty||'').split('/').pop()) : '运行 · 串口丢失') : '未运行';
+  setBar('b-at', atOk?100:(d.at_bridge&&d.at_bridge.ok?50:0), atOk?'var(--ok)':(d.at_bridge&&d.at_bridge.ok?'var(--warn)':'var(--bad)'));
+
+  // 音频桥
+  const vbOk = d.voice_bridge && d.voice_bridge.ok;
+  document.getElementById('s-vb').textContent = vbOk ? '运行中' : '未运行';
+  setBar('b-vb', vbOk?100:0, vbOk?'var(--ok)':'var(--bad)');
+
+  // rearm 心跳
+  const age = d.rearm ? d.rearm.heartbeat_age : null;
+  const rrOk = d.rearm && d.rearm.ok && age != null && age < 60;
+  const rrWarn = d.rearm && d.rearm.ok && age != null && age < 300;
+  document.getElementById('s-rr').textContent = (d.rearm&&d.rearm.ok) ? ('心跳 '+fmtAge(age)+' 前') : '未运行';
+  setBar('b-rr', age==null?0:Math.max(0,100-age/3), rrOk?'var(--ok)':(rrWarn?'var(--warn)':'var(--bad)'));
+
+  // 模块侧桥
+  const mbOk = d.module_bridge && d.module_bridge.ok;
+  document.getElementById('s-mb').textContent = mbOk ? ('运行 · pid '+d.module_bridge.pid) : '未运行/无设备';
+  setBar('b-mb', mbOk?100:0, mbOk?'var(--ok)':'var(--bad)');
+
+  // Tailscale
+  const tsOk = d.tailscale && d.tailscale.ok;
+  document.getElementById('s-ts').textContent = tsOk ? ('在线 · '+d.tailscale.ip) : '离线';
+  setBar('b-ts', tsOk?100:0, tsOk?'var(--ok)':'var(--bad)');
+
+  // ② 语音链路环 = 最差一环
+  const voiceAll = atOk && vbOk && rrOk && mbOk;
+  const voiceWarn = !voiceAll && vbOk && atOk && rrWarn;
+  const vv = document.getElementById('v-voice');
+  vv.textContent = voiceAll ? 'OK' : (voiceWarn ? 'CHECK' : 'DOWN');
+  vv.classList.toggle('down', !voiceAll && !voiceWarn);
+  setRing('r-voice', voiceAll ? Math.max(25, 100-(age||0)/3) : 100,
+          voiceAll?'var(--ok)':(voiceWarn?'var(--warn)':'var(--bad)'));
+
+  // ③ Tailscale 环
+  const vt = document.getElementById('v-ts');
+  vt.textContent = tsOk ? 'ON' : 'OFF'; vt.classList.toggle('down', !tsOk);
+  setRing('r-ts', 100, tsOk?'var(--ok)':'var(--bad)');
+
+  document.getElementById('upd').textContent =
+    new Date(d.now*1000).toTimeString().slice(0,8);
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>

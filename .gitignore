@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 构建产物（install.sh / rebuild-gateway.sh 生成）
+cellbridge-gateway
+cellbridge-gateway.new
+cellbridge-gateway.bak-*
+voice-audio-bridge
+CellBridge Console.app/
+
+# 运行时数据（含个人敏感信息：手机号/通话记录，切勿提交）
+.cellbridge/
+data_usage.json
+sent_sms.json
+call_history.json
+
+# 模块侧语音运行时（闭源二进制不进仓库；voice_runtime.provision_runtime() 可在线下载并 SHA-256 校验）
+voice-runtime/
+
+# 第三方固件 / EDL 刷机工具（121MB，含上游 GPL 工具链，与本移植无关）
+# 需要时自行获取：https://github.com/bkerler/edl
+firmware-qdc507/
+
+# WorkBuddy 项目数据
+.workbuddy/

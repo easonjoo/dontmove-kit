@@ -1,0 +1,3 @@
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec /Users/idoer/.workbuddy/binaries/python/envs/default/bin/python3 "$DIR/../Resources/cellbridge_widget.py"
