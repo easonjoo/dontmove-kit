@@ -183,14 +183,21 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("x-api-key", key)
-		// FlexiAPI 要求 From = Key 所属账号的 SIP 地址；缺失时报 401 Invalid API Key。
+		// FlexiAPI 要求 From = Key 所属账号的 SIP 地址；缺失或格式不对
+		// （如没带 "sip:" 前缀）都报 401 Invalid API Key，这里统一规范化。
 		if s.linphonePushFrom != "" {
-			req.Header.Set("From", s.linphonePushFrom)
+			from := s.linphonePushFrom
+			if !strings.HasPrefix(from, "sip:") && !strings.HasPrefix(from, "sips:") {
+				from = "sip:" + from
+			}
+			req.Header.Set("From", from)
 		}
 		return linphoneHTTPClient.Do(req)
 	}
 
-	for attempt := 1; attempt <= 2; attempt++ {
+	// 401/403 重试 4 次：FlexiAPI 多节点对有效 Key 偶发（实测约一半概率）
+	// 返回 Invalid API Key（节点间 Key 数据不一致），逐次退避重试即可穿过。
+	for attempt := 1; attempt <= 4; attempt++ {
 		resp, err := try()
 		if err != nil {
 			slog.Warn("linphonepush failed", "err", err)
@@ -210,11 +217,11 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 		if resp.StatusCode != 401 && resp.StatusCode != 403 {
 			return
 		}
-		if attempt == 1 {
-			time.Sleep(300 * time.Millisecond)
+		if attempt < 4 {
+			time.Sleep(time.Duration(attempt) * 400 * time.Millisecond)
 			continue
 		}
-		slog.Warn("linphonepush hint: Key 与当前出口 IP 不匹配或已过期 —— 关闭 Mac 的 IPv6 后在 subscribe.linphone.org 重新生成 Key（见 README）")
+		slog.Warn("linphonepush hint: 连续 401 —— 多为 FlexiAPI 多节点不一致（稍后重试即可）；若长期复现则检查 Key 绑定的出口 IP 是否变化（见 README）")
 	}
 }
 
