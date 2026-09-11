@@ -3,8 +3,10 @@ package sip
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +56,44 @@ func (s *Server) SetLinphonePush(key, url, from string) {
 	s.linphonePushKey = key
 	s.linphonePushURL = url
 	s.linphonePushFrom = from
+	if key != "" {
+		slog.Info("linphonepush config",
+			"key_prefix", keyPrefix(key), "key_len", len(key), "from", from)
+		go logLinphoneEgressIP()
+	}
+}
+
+// logLinphoneEgressIP 用推送专用的两个 HTTP 客户端各探测一次本机出口 IP。
+// FlexiAPI 的 Key 与「生成时所在机器的出口 IP」强绑定（AuthenticateKey.php
+// 校验 apiKey->ip == request->ip()），生成 Key 的浏览器优先走 IPv6，所以
+// 两条栈的出口都要打出来，一眼就能看出 Key 该绑哪边、当前哪边变了。
+func logLinphoneEgressIP() {
+	// 用 Cloudflare 的 trace 服务（双栈 A+AAAA），返回体含 "ip=" 行，
+	// 能真实反映该栈实际使用的出口地址族；ifconfig.me 之类只有 A 记录，
+	// 会让 v6 栈也退化成 v4，看不出真相。
+	for _, c := range []struct {
+		name   string
+		client *http.Client
+	}{{"v6(default)", linphoneHTTPClient}, {"v4", linphoneHTTPClientV4}} {
+		req, err := http.NewRequest(http.MethodGet, "https://cloudflare.com/cdn-cgi/trace", nil)
+		if err != nil {
+			continue
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			slog.Warn("linphonepush egress probe failed", "stack", c.name, "err", err)
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		resp.Body.Close()
+		ip := ""
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "ip=") {
+				ip = strings.TrimPrefix(line, "ip=")
+			}
+		}
+		slog.Info("linphonepush egress ip", "stack", c.name, "ip", ip)
+	}
 }
 
 // AttachSMS wires the SMS engine so SIP MESSAGE requests from the phone

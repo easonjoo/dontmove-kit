@@ -137,22 +137,43 @@ func pickCallPrid(prid string) string {
 	return tokens[0]
 }
 
-// linphoneDialer 强制 IPv4：见文件头关于 Key-IP 绑定的说明。
+// linphoneDialer 见下方双栈说明。
 var linphoneDialer = &net.Dialer{Timeout: 8 * time.Second}
 
-var linphoneHTTPClient = &http.Client{
-	// 直连（不经系统代理）：yakpush.go 同款理由，代理会 EOF/502。
-	// DisableKeepAlives：FlexiAPI 的 LB 节点间数据不一致（实测同一 Key 在
-	// 部分节点恒 401），keep-alive 会把后续请求都黏在同一条连接（同一节点）
-	// 上，401 成簇；禁用后每次推送/重试都新建连接重新选节点。
-	Timeout: 10 * time.Second,
-	Transport: &http.Transport{
-		Proxy:            nil,
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return linphoneDialer.DialContext(ctx, "tcp4", addr)
+// newLinphoneClient 造一个直连（不经系统代理）的推送客户端。
+// Prot：代理会 EOF/502，必须直连。
+// DisableKeepAlives：FlexiAPI 的 LB 节点间数据不一致（实测同一 Key 在部分
+// 节点恒 401），keep-alive 会把后续请求黏在同一条连接（同一节点）上导致
+// 401 成簇；禁用后每次推送/重试都新建连接重新选节点。
+func newLinphoneClient(network string) *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				return linphoneDialer.DialContext(ctx, network, addr)
+			},
 		},
-	},
+	}
+}
+
+// 双栈客户端：FlexiAPI 的 Key 与「生成 Key 时浏览器的出口 IP」强绑定
+// （AuthenticateKey.php: apiKey->ip == request->ip()），而浏览器默认优先走
+// IPv6 —— 若网关硬走 IPv4 就永远 401。但 IPv6 隐私临时地址会轮换，硬走 v6
+// 也不稳。故两个都备着：先试系统默认（v6 优先，对齐浏览器），401/403 再
+// 退回 v4，哪一栈与 Key 绑定一致就用哪一栈。
+var (
+	linphoneHTTPClient   = newLinphoneClient("tcp")
+	linphoneHTTPClientV4 = newLinphoneClient("tcp4")
+)
+
+// keyPrefix 返回 Key 的前 6 位（仅用于日志比对，避免整串密钥落盘）。
+func keyPrefix(key string) string {
+	if len(key) <= 6 {
+		return key
+	}
+	return key[:6] + "…"
 }
 
 // sendLinphonePush 对一组注册参数发起一次 "call" 推送。
@@ -164,6 +185,11 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 	if key == "" || !pp.valid() {
 		return
 	}
+	// 诊断：Key 前缀 + From 每次推送都打，排查「Key 是否与面板生成的一致」。
+	slog.Info("linphonepush dispatch",
+		"key_prefix", keyPrefix(key), "key_len", len(key),
+		"from", s.linphonePushFrom,
+		"param", cleanPushParam(pp.Param))
 	url := s.linphonePushURL
 	if url == "" {
 		url = linphonePushURLDefault
@@ -179,7 +205,9 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 		return
 	}
 
-	try := func() (*http.Response, error) {
+	// 双栈：奇数轮走系统默认（v6 优先，对齐浏览器生成 Key 时的出口），
+	// 偶数轮强制 v4。哪一栈与 Key 绑定的 IP 一致，哪一栈就会 2xx。
+	try := func(client *http.Client) (*http.Response, error) {
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
@@ -196,20 +224,26 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 			}
 			req.Header.Set("From", from)
 		}
-		return linphoneHTTPClient.Do(req)
+		return client.Do(req)
 	}
 
-	// 401/403 重试 4 次：FlexiAPI 多节点对有效 Key 偶发（实测约一半概率）
-	// 返回 Invalid API Key（节点间 Key 数据不一致），逐次退避重试即可穿过。
+	// 401/403 重试 4 轮（v6/v4 交替）：既覆盖「Key 绑在另一栈 IP 上」，
+	// 也覆盖 FlexiAPI 多节点偶发的不一致。
 	for attempt := 1; attempt <= 4; attempt++ {
-		resp, err := try()
+		client := linphoneHTTPClient
+		stack := "v6"
+		if attempt%2 == 0 {
+			client = linphoneHTTPClientV4
+			stack = "v4"
+		}
+		resp, err := try(client)
 		if err != nil {
-			slog.Warn("linphonepush failed", "err", err)
+			slog.Warn("linphonepush failed", "stack", stack, "err", err)
 			return
 		}
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
-		fields := []any{"status", resp.Status}
+		fields := []any{"status", resp.Status, "stack", stack}
 		if len(detail) > 0 {
 			fields = append(fields, "body", strings.TrimSpace(string(detail)))
 		}
@@ -225,7 +259,7 @@ func (s *Server) sendLinphonePush(pp pushParams, callID string) {
 			time.Sleep(time.Duration(attempt) * 400 * time.Millisecond)
 			continue
 		}
-		slog.Warn("linphonepush hint: 连续 401 —— 多为 FlexiAPI 多节点不一致（稍后重试即可）；若长期复现则检查 Key 绑定的出口 IP 是否变化（见 README）")
+		slog.Warn("linphonepush hint: v6 与 v4 都 401 —— Key 绑定的出口 IP 已变（家宽 v6 临时地址轮换 / 出口切换）。请在 Mac 浏览器重新生成 API Key（见 README）")
 	}
 }
 
