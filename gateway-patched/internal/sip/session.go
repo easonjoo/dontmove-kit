@@ -37,6 +37,26 @@ type SIPCallSession struct {
 	modemID modem.CallID
 	bye     byePlan
 	hasBye  bool
+	// invites records every INVITE this gateway has sent to a client contact
+	// for a call that is still ringing, verbatim. A phone woken by a VoIP push
+	// restarts its SIP stack and re-registers from a NEW source port, so the
+	// invitation it is actually showing may sit on a different address than
+	// the first one; and a CANCEL only silences the phone when it repeats the
+	// invitation byte for byte (RFC 3261 §9.1). Keeping the sent message is
+	// therefore the only way to end such a call reliably.
+	invites []inviteAttempt
+}
+
+// inviteAttempt is one INVITE this gateway sent to one client contact.
+//
+// req holds the exact bytes that went out, and the CANCEL is derived from them
+// rather than rebuilt from the dialog fields: the previous implementation
+// assembled the CANCEL's Request-URI from the client's Contact while the
+// INVITE had been addressed to sip:<user>@<gateway>, so the two disagreed and
+// the phone rang on after the far end had hung up (observed 2026-09-11).
+type inviteAttempt struct {
+	addr *net.UDPAddr
+	req  string
 }
 
 // byePlan is everything needed to end an established dialog from our side —
@@ -274,4 +294,42 @@ func (s *SIPCallSession) ByePlan() (byePlan, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bye, s.hasBye
+}
+
+// maxInviteAttempts bounds how many contacts one ringing call may invite. A
+// client stuck re-registering in a loop must not grow this without bound.
+const maxInviteAttempts = 8
+
+// RememberInvite records one invitation and reports whether it is new.
+//
+// The destination address is the key: inviting the same contact twice rings
+// the phone a second time instead of fixing anything, while a contact that has
+// moved to a new port is a genuinely new invitation — it is the address the
+// phone can still be reached on, and the one its CANCEL will have to match.
+func (s *SIPCallSession) RememberInvite(a inviteAttempt) bool {
+	if a.addr == nil || a.req == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, have := range s.invites {
+		if have.addr != nil && have.addr.String() == a.addr.String() {
+			return false
+		}
+	}
+	if len(s.invites) >= maxInviteAttempts {
+		return false
+	}
+	s.invites = append(s.invites, a)
+	return true
+}
+
+// InviteAttempts returns the invitations sent for this call so the teardown can
+// aim a CANCEL at each of them without holding the session lock.
+func (s *SIPCallSession) InviteAttempts() []inviteAttempt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]inviteAttempt, len(s.invites))
+	copy(out, s.invites)
+	return out
 }

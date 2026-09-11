@@ -255,37 +255,36 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 		_ = media.Close()
 		return
 	}
-	sent := 0
 	// Linphone 休眠时收不到 UDP INVITE：先推一把把它唤醒（弹 CallKit →
-	// 重新 REGISTER），并把重试窗口从 5s 拉到 20s，等新注册一出现，
-	// 下一轮循环立即把 INVITE 送到新地址。前台客户端不受影响——
-	// 第一轮就送达，后续重试因 sent>0 不再执行。
-	pushSent := s.wakeLinphoneClients(callID)
-	attempts := inboundInviteAttempts
-	if pushSent {
-		attempts = inboundInvitePushAttempts
-	}
+	// 重新 REGISTER）。前台客户端不受影响，第一轮 INVITE 就送到。
+	s.wakeLinphoneClients(callID)
 	// Branch and From-tag of this INVITE. They are derived from the call id
-	// so that a CANCEL sent later (the far end gave up before the phone was
+	// so that the CANCEL sent later (the far end gave up before the phone was
 	// picked up) reuses the very branch the client is showing.
 	shortID := strings.TrimPrefix(callID, "in-")
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
+	branch := "z9hG4bK" + shortID
 	// Address the phone can actually reach back on. nasIP() only knows the
 	// tailnet (100.x) address and degrades to 127.0.0.1 without Tailscale, so
 	// the VoIP push used to advertise sip:<peer>@127.0.0.1 — YakPhone then woke
 	// for a CallKit call whose URI pointed at the phone itself. Prefer the
 	// interface used to reach the registered client.
 	reachable := ""
-	for attempt := 0; attempt < attempts && sent == 0; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-sess.ctx.Done():
-				return
-			case <-time.After(inboundInviteRetryDelay):
-			}
-		}
+	// inviteRegistered invites every registration of this account that has not
+	// been invited yet, and reports how many invitations went out this pass.
+	//
+	// A later pass is a RETRANSMISSION, not a new call: the branch, Call-ID and
+	// CSeq of the first INVITE are kept, only the destination changes. That
+	// distinction is what makes this safe. A client whose stack is still alive
+	// recognises the branch as its own transaction and merely resends its
+	// provisional response — no second call appears on screen. A client whose
+	// stack the VoIP push restarted has no record of the branch and accepts a
+	// brand-new invitation, which is exactly what puts a transaction on the new
+	// port that the teardown CANCEL can match.
+	inviteRegistered := func() int {
+		sent := 0
 		for _, reg := range s.registrar.All() {
 			remote := contactAddr(reg.Contact)
 			if remote == nil {
@@ -300,17 +299,17 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 			}
 			inviteSDP := fmt.Sprintf("v=0\r\no=cellbridge 0 0 IN IP4 %s\r\ns=CellBridge\r\nc=IN IP4 %s\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", local, local, media.LocalAddr().Port)
 			callerHdrs, callerFrom := inboundCallerHeaders(peer, local)
-			invite := fmt.Sprintf("INVITE sip:%s@%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=z9hG4bK%s;rport\r\nFrom: %s;tag=cb%s\r\nTo: <sip:%s@%s>\r\nCall-ID: %s\r\nCSeq: 1 INVITE\r\nContact: <sip:cellbridge@%s:5060>\r\nMax-Forwards: 70\r\n%sContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", reg.Username, local, local, shortID, callerFrom, shortID, reg.Username, local, callID, local, callerHdrs, len(inviteSDP), inviteSDP)
-			if _, err := s.conn.WriteToUDP([]byte(invite), remote); err != nil {
-				slog.Warn("sip inbound invite failed", "user", reg.Username, "err", err)
+			invite := fmt.Sprintf("INVITE sip:%s@%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=%s;rport\r\nFrom: %s;tag=cb%s\r\nTo: <sip:%s@%s>\r\nCall-ID: %s\r\nCSeq: 1 INVITE\r\nContact: <sip:cellbridge@%s:5060>\r\nMax-Forwards: 70\r\n%sContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", reg.Username, local, local, branch, callerFrom, shortID, reg.Username, local, callID, local, callerHdrs, len(inviteSDP), inviteSDP)
+			// Claim the address before sending it: a duplicate INVITE to the
+			// same contact rings the phone again instead of fixing anything.
+			if !sess.RememberInvite(inviteAttempt{addr: remote, req: invite}) {
 				continue
 			}
-			sent++
-			// Remember where this invitation went. The far end can give up
-			// while the phone is still ringing, and the only way to stop that
-			// phone ringing is to CANCEL the INVITE — which needs the address
-			// and the exact headers of the invitation it is showing. A later
-			// pickup overwrites this with the established dialog (see
+			// Remember where this invitation went, and the exact bytes of it.
+			// The far end can give up while the phone is still ringing, and the
+			// only way to stop that phone ringing is to CANCEL the invitation
+			// it is showing — which must repeat this message byte for byte.
+			// A later pickup overwrites this with the established dialog (see
 			// acceptInbound). With several registered clients the last one
 			// invited wins; V1 runs a single phone.
 			sess.SetByePlan(byePlan{
@@ -320,16 +319,30 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 				to:           fmt.Sprintf("<sip:%s@%s>", reg.Username, local),
 				callID:       callID,
 				inviteCSeq:   1,
-				inviteBranch: "z9hG4bK" + shortID,
+				inviteBranch: branch,
 				inviteReq:    invite,
 				username:     reg.Username,
 			})
-			slog.Info("sip inbound invite sent", "user", reg.Username, "contact", remote.String(), "call", callID, "peer", peer, "attempt", attempt+1)
+			if _, err := s.conn.WriteToUDP([]byte(invite), remote); err != nil {
+				slog.Warn("sip inbound invite failed", "user", reg.Username, "err", err)
+				continue
+			}
+			sent++
+			slog.Info("sip inbound invite sent", "user", reg.Username, "contact", remote.String(), "call", callID, "peer", peer, "attempt", len(sess.InviteAttempts()))
 		}
+		return sent
 	}
+	sent := inviteRegistered()
 	if sent == 0 {
-		slog.Warn("sip inbound invite unsent", "call", callID, "peer", peer, "reason", "no registered client reachable")
+		slog.Warn("sip inbound invite unsent", "call", callID, "peer", peer, "reason", "no registered client reachable yet; sweeping the registrar")
 	}
+	// Keep watching the registration table until the call is answered or gone.
+	// The VoIP push makes Linphone restart its SIP transport, and it comes back
+	// from an entirely new source port (54865 → 61077 → 58100 within 40s on
+	// 2026-09-11). The invitation sent to the previous port is unreachable by
+	// then, so the CANCEL aimed at it matched nothing and the phone rang on
+	// after the caller had hung up.
+	go s.inviteReregisteredContacts(sess, inviteRegistered)
 	if reachable == "" {
 		reachable = s.outboundIP()
 	}
@@ -358,21 +371,43 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 // gateway gives up and hangs up the cellular leg.
 const inboundRingTimeout = 45 * time.Second
 
-// YakPhone re-registers extremely aggressively — an expires=0 unregister
-// immediately followed by a fresh register, several times a minute — so the
-// registrar can be momentarily empty at the exact instant a call arrives.
-// A single delivery attempt then finds no target and the call is dropped on
-// the floor. Retry briefly before giving up; the retry only runs while
-// nothing has been delivered, so a client can never receive two INVITEs for
-// the same call.
-const (
-	inboundInviteAttempts   = 10
-	inboundInviteRetryDelay = 500 * time.Millisecond
+// inboundInviteSweep is how often the registrar is re-read while an inbound
+// call rings, looking for a contact that appeared after the first invitation.
+//
+// A push-woken Linphone re-registers within a second or two of the push, and
+// the invitation already on the wire was addressed to the port it has just
+// abandoned, so this sweep is what actually puts a ringing call in front of
+// the phone. It deliberately does not re-invite an address that was already
+// invited — only a moved contact is re-aimed at.
+const inboundInviteSweep = 600 * time.Millisecond
 
-	// 发过 Linphone 推送后的重试预算：App 冷启动 + 重新 REGISTER 通常
-	// 1~5s，留 20s 覆盖弱网/旧机型（与 45s 振铃超时留有余量）。
-	inboundInvitePushAttempts = 40
-)
+// inviteReregisteredContacts keeps inviting contacts that turn up while the
+// call is still ringing, until the client answers or the call is torn down.
+//
+// The invitation is retransmitted verbatim, branch and all: a client whose
+// stack survived recognises its own transaction and just resends its
+// provisional response, while a client whose stack the push restarted accepts
+// it as the invitation it is now waiting for. Either way the phone ends up
+// with a transaction the teardown CANCEL can name.
+func (s *Server) inviteReregisteredContacts(sess *SIPCallSession, invite func() int) {
+	if invite == nil {
+		return
+	}
+	deadline := time.Now().Add(inboundRingTimeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-sess.ctx.Done():
+			return
+		case <-time.After(inboundInviteSweep):
+		}
+		// Once the client picked up there is a dialog, not an invitation; a
+		// retransmission would only confuse it.
+		if sess.State() != "init" {
+			return
+		}
+		invite()
+	}
+}
 
 // contactAddr extracts host:port from a SIP Contact header value.
 func contactAddr(contact string) *net.UDPAddr {
@@ -474,6 +509,15 @@ func (s *Server) handleResponse(msg string, remote *net.UDPAddr) {
 	if callID == "" {
 		return
 	}
+	if strings.Contains(strings.ToUpper(cseq), "CANCEL") {
+		// The client's verdict on our own CANCEL: 200 means it matched the
+		// transaction and stopped ringing, 481 means there was nothing left to
+		// match — a stack restarted by the VoIP push — and the phone rang on.
+		// Logged before the session lookup because the session is usually gone
+		// by then, and this line is the only visible evidence either way.
+		slog.Info("sip cancel response", "call", callID, "code", code, "remote", remote.String())
+		return
+	}
 	v, ok := s.sessions.Load(callID)
 	if !ok {
 		return
@@ -491,7 +535,7 @@ func (s *Server) handleResponse(msg string, remote *net.UDPAddr) {
 		// means the app never presented it, which points at the app/OS side
 		// (background suspension → needs the PushKit push) rather than at
 		// the gateway.
-		slog.Info("sip inbound provisional", "call", callID, "code", code)
+		slog.Info("sip inbound provisional", "call", callID, "code", code, "remote", remote.String())
 		return
 	case code == 200 && strings.Contains(strings.ToUpper(cseq), "INVITE"):
 		go s.acceptInbound(sess, msg, remote)
@@ -982,6 +1026,12 @@ func (s *Server) sendDialogTeardown(sess *SIPCallSession, reason string) {
 	if !ok || plan.remote == nil {
 		return
 	}
+	// A phone that is still ringing for a call the far end abandoned needs a
+	// CANCEL per invitation, not a BYE: no dialog exists yet.
+	if sess.Direction == "inbound" && sess.State() == "init" {
+		s.cancelInvitations(sess, plan, reason)
+		return
+	}
 	localIP := s.localIPFor(plan.remote)
 
 	type teardownTarget struct {
@@ -1030,6 +1080,104 @@ func (s *Server) sendDialogTeardown(sess *SIPCallSession, reason string) {
 	}
 }
 
+// cancelInvitations silences a phone that is still ringing for a cellular call
+// the far end has given up on.
+//
+// Every invitation this gateway sent gets its own CANCEL aimed at the contact
+// that received it, because a phone woken by the VoIP push restarts its SIP
+// stack and re-registers from a new port: the invitation it is actually
+// showing is then on a different address than the first one, and a CANCEL only
+// matches the transaction it names. Sending one CANCEL to "the current
+// registration" (as this used to) missed it either way.
+func (s *Server) cancelInvitations(sess *SIPCallSession, plan byePlan, reason string) {
+	attempts := sess.InviteAttempts()
+	if len(attempts) == 0 {
+		// No invitation was recorded (an older session, or one rebuilt by a
+		// test): fall back to the dialog fields.
+		attempts = []inviteAttempt{{addr: plan.remote, req: plan.inviteReq}}
+	}
+	for _, a := range attempts {
+		if a.addr == nil {
+			continue
+		}
+		message := cancelMessage(a.req, s.localIPFor(a.addr))
+		if message == "" {
+			// The raw INVITE is the only reliable source for the Request-URI
+			// and the Via branch. Without it, rebuild from the stored fields so
+			// the call is still cancelled rather than silently left ringing.
+			fallback := plan
+			fallback.remote = a.addr
+			_, message = teardownMessage("inbound", "init", sess.LocalTag(), fallback, s.localIPFor(a.addr))
+		}
+		if message == "" {
+			continue
+		}
+		for attempt := 1; attempt <= 2; attempt++ {
+			if _, err := s.conn.WriteToUDP([]byte(message), a.addr); err != nil {
+				slog.Warn("sip teardown failed", "call", sess.ID, "method", "CANCEL", "remote", a.addr.String(), "err", err)
+				break
+			}
+			slog.Info("sip teardown sent", "call", sess.ID, "method", "CANCEL", "reason", reason, "remote", a.addr.String(), "target", "invite", "attempt", attempt)
+			if attempt == 1 {
+				time.Sleep(teardownRepeatDelay)
+			}
+		}
+	}
+}
+
+// cancelMessage builds the CANCEL for an INVITE this gateway sent, copying
+// every header the CANCEL must repeat out of that very message.
+//
+// RFC 3261 §9.1 requires a CANCEL's Request-URI, Call-ID, From, To and CSeq
+// number to be identical to those of the INVITE, and its top Via to be the
+// INVITE's. Rebuilding them from separate bookkeeping is exactly how this
+// broke: the CANCEL's Request-URI was computed from the client's Contact while
+// the INVITE had been addressed to sip:<user>@<gateway>, so the two disagreed —
+// and a phone unable to match the CANCEL to the invitation it was showing kept
+// ringing after the caller had hung up (observed 2026-09-11). Deriving the
+// CANCEL from the sent bytes makes that drift impossible.
+func cancelMessage(inviteReq, localIP string) string {
+	if inviteReq == "" || localIP == "" {
+		return ""
+	}
+	reqURI := requestURIOf(inviteReq)
+	branch := viaBranchOf(inviteReq)
+	from := parseHeader(inviteReq, "From")
+	to := parseHeader(inviteReq, "To")
+	callID := parseHeader(inviteReq, "Call-ID")
+	cseq := parseHeader(inviteReq, "CSeq")
+	if reqURI == "" || branch == "" || from == "" || to == "" || callID == "" || cseq == "" {
+		return ""
+	}
+	return fmt.Sprintf("CANCEL %s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=%s;rport\r\nMax-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %d CANCEL\r\nContent-Length: 0\r\n\r\n",
+		reqURI, localIP, branch, from, to, callID, cseqNumber(cseq))
+}
+
+// requestURIOf returns the Request-URI of a SIP request message.
+func requestURIOf(msg string) string {
+	line, _, _ := strings.Cut(msg, "\r\n")
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[1]
+}
+
+// viaBranchOf returns the branch parameter of the topmost Via header — the
+// value that ties a CANCEL to the INVITE transaction it cancels.
+func viaBranchOf(msg string) string {
+	via := parseHeader(msg, "Via")
+	i := strings.Index(via, "branch=")
+	if i < 0 {
+		return ""
+	}
+	rest := via[i+len("branch="):]
+	if j := strings.IndexAny(rest, ";, \t"); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
 // teardownMessage builds the SIP message that ends a call at the client, or
 // "" when this dialog is past notifying. It depends on no Server state so the
 // exact bytes can be asserted offline.
@@ -1047,9 +1195,14 @@ func teardownMessage(direction, state, localTag string, plan byePlan, localIP st
 	}
 	switch {
 	case direction == "inbound" && state == "init":
-		// No dialog exists yet. CANCEL must reuse the INVITE's Via branch
-		// and CSeq number, otherwise the client cannot match it to the
-		// invitation it is showing.
+		// No dialog exists yet. The CANCEL has to look like the INVITE the
+		// phone is showing, so derive it from that very message whenever we
+		// still have it.
+		if msg := cancelMessage(plan.inviteReq, localIP); msg != "" {
+			return "CANCEL", msg
+		}
+		// Fallback for a plan captured without the raw INVITE (tests, and any
+		// caller that only kept the header fields): rebuild from those.
 		msg := fmt.Sprintf("CANCEL %s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=%s;rport\r\nMax-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %d CANCEL\r\nContent-Length: 0\r\n\r\n",
 			plan.reqURI, localIP, plan.inviteBranch, plan.from, plan.to, plan.callID, plan.inviteCSeq)
 		return "CANCEL", msg
