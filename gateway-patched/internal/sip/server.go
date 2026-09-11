@@ -299,7 +299,8 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 				reachable = local
 			}
 			inviteSDP := fmt.Sprintf("v=0\r\no=cellbridge 0 0 IN IP4 %s\r\ns=CellBridge\r\nc=IN IP4 %s\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", local, local, media.LocalAddr().Port)
-			invite := fmt.Sprintf("INVITE sip:%s@%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=z9hG4bK%s;rport\r\nFrom: <sip:%s@%s>;tag=cb%s\r\nTo: <sip:%s@%s>\r\nCall-ID: %s\r\nCSeq: 1 INVITE\r\nContact: <sip:cellbridge@%s:5060>\r\nMax-Forwards: 70\r\nContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", reg.Username, local, local, shortID, peer, local, shortID, reg.Username, local, callID, local, len(inviteSDP), inviteSDP)
+			callerHdrs, callerFrom := inboundCallerHeaders(peer, local)
+			invite := fmt.Sprintf("INVITE sip:%s@%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:5060;branch=z9hG4bK%s;rport\r\nFrom: %s;tag=cb%s\r\nTo: <sip:%s@%s>\r\nCall-ID: %s\r\nCSeq: 1 INVITE\r\nContact: <sip:cellbridge@%s:5060>\r\nMax-Forwards: 70\r\n%sContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", reg.Username, local, local, shortID, callerFrom, shortID, reg.Username, local, callID, local, callerHdrs, len(inviteSDP), inviteSDP)
 			if _, err := s.conn.WriteToUDP([]byte(invite), remote); err != nil {
 				slog.Warn("sip inbound invite failed", "user", reg.Username, "err", err)
 				continue
@@ -315,12 +316,13 @@ func (s *Server) ringClients(event modem.ModemEvent) {
 			sess.SetByePlan(byePlan{
 				remote:       remote,
 				reqURI:       contactURI(reg.Contact, remote, reg.Username),
-				from:         fmt.Sprintf("<sip:%s@%s>;tag=cb%s", peer, local, shortID),
+				from:         fmt.Sprintf("%s;tag=cb%s", callerFrom, shortID),
 				to:           fmt.Sprintf("<sip:%s@%s>", reg.Username, local),
 				callID:       callID,
 				inviteCSeq:   1,
 				inviteBranch: "z9hG4bK" + shortID,
 				inviteReq:    invite,
+				username:     reg.Username,
 			})
 			slog.Info("sip inbound invite sent", "user", reg.Username, "contact", remote.String(), "call", callID, "peer", peer, "attempt", attempt+1)
 		}
@@ -772,6 +774,7 @@ func (s *Server) handleInvite(msg string, remote *net.UDPAddr) {
 		callID:     callID,
 		inviteCSeq: cseqNumber(parseHeader(msg, "CSeq")),
 		inviteReq:  msg,
+		username:   username,
 	})
 	// Claim the Call-ID BEFORE Dial(). Dial() rotates the QDC507 voice route
 	// and issues ATD, which takes 2-9s; the retransmission guard at the top
@@ -957,24 +960,74 @@ func buildResponse(req string, code int, reason, extraHeaders, body, tag string)
 	return fmt.Sprintf("SIP/2.0 %d %s\r\nVia: %s\r\nFrom: %s\r\nTo: %s%s\r\nCall-ID: %s\r\nCSeq: %s\r\n%sContent-Length: %d\r\n\r\n%s", code, reason, via, from, to, tag, callID, cseq, extraHeaders, len(body), body)
 }
 
+// teardownRepeatDelay spaces the duplicate teardown sent to each target.
+// UDP has no retransmission of its own, and the phone this is aimed at is
+// typically mid-reconnect (woken by a VoIP push seconds earlier), so a single
+// lost datagram means the phone keeps ringing for a call nobody is on.
+const teardownRepeatDelay = 200 * time.Millisecond
+
 // sendDialogTeardown tells the SIP client that a call the modem has already
 // released is over. Nothing else in this gateway ever sends a BYE, so a
 // far-end hangup used to leave the client's dialog open forever: the phone
 // stayed "in call" although the audio had stopped.
+//
+// The teardown is sent to every address the dialog's account could currently
+// be reached at, not just the one the INVITE went to. A phone woken by a VoIP
+// push restarts its SIP stack and re-registers from a new source port, which
+// retires the invite-time address; a CANCEL aimed only there was silently
+// dropped and the phone rang on after the far end hung up (observed
+// 2026-09-11: 62862 -> 58591 -> 52543 within seconds).
 func (s *Server) sendDialogTeardown(sess *SIPCallSession, reason string) {
 	plan, ok := sess.ByePlan()
-	if !ok {
+	if !ok || plan.remote == nil {
 		return
 	}
-	method, message := teardownMessage(sess.Direction, sess.State(), sess.LocalTag(), plan, s.localIPFor(plan.remote))
-	if message == "" {
-		return
+	localIP := s.localIPFor(plan.remote)
+
+	type teardownTarget struct {
+		addr   *net.UDPAddr
+		origin string
 	}
-	if _, err := s.conn.WriteToUDP([]byte(message), plan.remote); err != nil {
-		slog.Warn("sip teardown failed", "call", sess.ID, "method", method, "err", err)
-		return
+	var targets []teardownTarget
+	seen := make(map[string]bool)
+	add := func(addr *net.UDPAddr, origin string) {
+		if addr == nil || seen[addr.String()] {
+			return
+		}
+		seen[addr.String()] = true
+		targets = append(targets, teardownTarget{addr: addr, origin: origin})
 	}
-	slog.Info("sip teardown sent", "call", sess.ID, "method", method, "reason", reason, "remote", plan.remote.String())
+	add(plan.remote, "invite")
+	if s.registrar != nil {
+		for _, reg := range s.registrar.All() {
+			if plan.username != "" && reg.Username != plan.username {
+				continue
+			}
+			add(contactAddr(reg.Contact), "reregister")
+		}
+	}
+
+	for _, tg := range targets {
+		// 只有发送地址换成新注册的那个；Request-URI 保持 INVITE 的原值，
+		// 因为 RFC 3261 §9.1 要求 CANCEL 的 Request-URI 与 INVITE 完全相同，
+		// 客户端靠它加上 Call-ID/CSeq/branch 认出该 CANCEL 属于哪个事务。
+		p := plan
+		p.remote = tg.addr
+		method, message := teardownMessage(sess.Direction, sess.State(), sess.LocalTag(), p, localIP)
+		if message == "" {
+			continue
+		}
+		for attempt := 1; attempt <= 2; attempt++ {
+			if _, err := s.conn.WriteToUDP([]byte(message), tg.addr); err != nil {
+				slog.Warn("sip teardown failed", "call", sess.ID, "method", method, "target", tg.origin, "err", err)
+				break
+			}
+			slog.Info("sip teardown sent", "call", sess.ID, "method", method, "reason", reason, "remote", tg.addr.String(), "target", tg.origin, "attempt", attempt)
+			if attempt == 1 {
+				time.Sleep(teardownRepeatDelay)
+			}
+		}
+	}
 }
 
 // teardownMessage builds the SIP message that ends a call at the client, or
@@ -1031,6 +1084,27 @@ func contactURI(contact string, remote *net.UDPAddr, user string) string {
 		return ""
 	}
 	return fmt.Sprintf("sip:%s@%s", user, remote.String())
+}
+
+// inboundCallerHeaders renders the caller identity for the INVITE that rings
+// a SIP client for a cellular call.
+//
+// iOS builds the lock-screen caller from the From display name (and from
+// P-Asserted-Identity when it is trusted); a bare "From: <sip:number@host>"
+// left Linphone showing no number at all for an otherwise perfectly delivered
+// incoming call (2026-09-11). The number therefore goes out in every place a
+// client may look: the display name, P-Asserted-Identity and Remote-Party-ID.
+// A call with no caller id gets a neutral "unknown" URI rather than an empty
+// header, which some clients reject outright.
+func inboundCallerHeaders(peer, localIP string) (extra, from string) {
+	if peer == "" {
+		return "", fmt.Sprintf("<sip:unknown@%s>", localIP)
+	}
+	name := `"` + peer + `"`
+	uri := fmt.Sprintf("<sip:%s@%s>", peer, localIP)
+	extra = "P-Asserted-Identity: " + name + " " + uri + "\r\n" +
+		"Remote-Party-ID: " + name + " " + uri + ";party=calling;screen=yes\r\n"
+	return extra, name + " " + uri
 }
 
 // cseqNumber reads the sequence number out of a "CSeq: <n> <METHOD>" header.

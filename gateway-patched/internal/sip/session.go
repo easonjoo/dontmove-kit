@@ -56,6 +56,13 @@ type byePlan struct {
 	inviteCSeq   int    // CSeq number of the INVITE that opened the dialog
 	inviteBranch string // Via branch of that INVITE (CANCEL must reuse it)
 	inviteReq    string // the raw INVITE, needed to answer it with an error
+	// username is the SIP account the dialog belongs to, so a teardown can
+	// also be aimed at whatever address that account has registered since
+	// the INVITE went out. A phone woken by a VoIP push restarts its SIP
+	// stack and re-registers from a NEW source port, which makes the
+	// invite-time address dead: the CANCEL sent only there was dropped and
+	// the phone rang on after the far end hung up (observed 2026-09-11).
+	username string
 }
 
 func NewSIPCallSession(id, peer, dir string, modemCtl *modem.ActiveCallAdapter, audio modem.VoiceAudio, media *MediaSession) *SIPCallSession {
