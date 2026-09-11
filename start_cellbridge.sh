@@ -51,9 +51,9 @@ BRIDGE="$DIR/voice-audio-bridge"
 GATEWAY="$DIR/cellbridge-gateway"
 SIP_USER="${SIP_USER:-iphone}"
 SIP_PASS="${SIP_PASS:-cellbridge-$(id -un)}"
-# 第二分机：出门经 Tailscale 注册用（tailnet 内 WireGuard 加密，弱口令可接受）
-SIP_USER2="${SIP_USER2:-remote}"
-SIP_PASS2="${SIP_PASS2:-cellbridge-remote-$(id -un)}"
+# 第二分机：单账号双通道方案（出门 Tailscale / 在家 Shadowrocket Host 映射到局域网）
+SIP_USER2="${SIP_USER2:-sheldon}"
+SIP_PASS2="${SIP_PASS2:-cellbridge-idoer}"
 
 mkdir -p "$RUN" "$DATA" "$LOG"
 
