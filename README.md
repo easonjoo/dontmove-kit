@@ -39,7 +39,7 @@ cd dontmove-kit
 
 1. 检查依赖：Go 1.25+、Python 3 + pyusb、swiftc（Xcode CLT）、adb
 2. 拉取 [mccding/CellBridge](https://github.com/mccding/CellBridge) 上游源码到 `/tmp/CellBridge-main`
-3. 用 `gateway-patched/` 覆盖上游并编译出 `cellbridge-gateway`（含 13+ 处 macOS/蜂窝修复）
+3. 用 `gateway-patched/` 覆盖上游并编译出 `cellbridge-gateway`（含 15+ 处 macOS/蜂窝修复）
 4. 编译 `voice-audio-bridge`（Swift，蜂窝 UAC 音频 ↔ FIFO）
 5. 构建 `CellBridge Console.app`（原生 AppKit 控制台，可选装到 /Applications）
 6. 打印 SIP 客户端需要填写的服务器地址

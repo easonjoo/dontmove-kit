@@ -18,6 +18,15 @@
 #      会话（按客户端 Call-ID 存）永远匹配不到，呼出时对方挂断等于什么都没做。
 #      → sessionForModemEvent 双方向匹配 + sendDialogTeardown 按状态发
 #        CANCEL（还在振铃）/BYE（已接通）/480（呼出未接通）。
+#   ⑭ 对面挂断后本机继续响：手机被 VoIP 推送唤醒后会重启 SIP 栈、从新的源
+#      端口重新注册，INVITE 发出时的地址随即失效，只发旧地址的 CANCEL 被
+#      静默丢弃（实测 62862→58591→52543，几秒内连换两次）。
+#      → sendDialogTeardown 把 teardown 同时发往 INVITE 地址与该账号当前
+#        注册地址，每个目标重发一次；Request-URI 仍按 RFC 3261 §9.1 复用
+#        INVITE 的原值，只有发送地址更新，客户端才能匹配到该事务。
+#   ⑮ 来电不显示号码：INVITE 的 From 只有裸 URI（<sip:号码@网关>），锁屏
+#      来电人一栏是空的。→ 补上带引号的号码显示名、P-Asserted-Identity 和
+#      Remote-Party-ID；无来电号码时退回 unknown URI，避免空的 From 头。
 # 注：⑦（AT 桥上行线程被一次 EIO 杀死）在 at_pty_bridge.py 里，与网关无关。
 #
 # 修复后的源码保存在 gateway-patched/，编译前覆盖到上游源码上。
