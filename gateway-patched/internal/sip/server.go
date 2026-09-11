@@ -167,7 +167,52 @@ func (s *Server) Start(ctx context.Context) error {
 	slog.Info("sip server listening", "addr", s.listenAddr)
 	go s.readLoop()
 	go s.inboundLoop()
+	go s.ghostReaper()
 	return nil
+}
+
+// ghostReaper clears cellular call contexts leaked by teardown races: a
+// CANCEL/BYE processed while ATD is still dialling can lose the race against
+// the module completing the call, leaving a connected call with no SIP
+// session owning it. Runs only when no session is live, so ATH can never
+// take down a call a client is actually on.
+func (s *Server) ghostReaper() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		s.maybeReapGhosts()
+	}
+}
+
+// maybeReapGhosts runs one reap pass when no SIP session is live. Safe to
+// call from anywhere; quiet when the modem is busy or unavailable.
+func (s *Server) maybeReapGhosts() {
+	if s.modem == nil {
+		return
+	}
+	busy := false
+	s.sessions.Range(func(_, v any) bool {
+		if sess, ok := v.(*SIPCallSession); ok && sess.State() != "ended" {
+			busy = true
+			return false
+		}
+		return true
+	})
+	if busy {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+	defer cancel()
+	if _, err := s.modem.ReapGhosts(ctx); err != nil {
+		// Normal when the AT channel is wedged or mid-command; the next
+		// tick retries.
+		slog.Debug("ghost reap skipped", "err", err)
+	}
 }
 
 func (s *Server) Stop(ctx context.Context) error {
@@ -1003,6 +1048,17 @@ func (s *Server) handleAckBye(msg string, remote *net.UDPAddr, first string) {
 				"reason", parseHeader(msg, "Reason"))
 			_ = sess.Hangup()
 			s.sessions.Delete(callID)
+			// 快速一次性收割：CANCEL/BYE 与蜂窝拨号竞态时，模块可能随后
+			// 才完成应答，留下一具没人认领的"活尸"。3 秒后清一次，不等
+			// 10 秒周期。
+			go func() {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-time.After(3 * time.Second):
+				}
+				s.maybeReapGhosts()
+			}()
 		}
 	}
 	s.sendResponse(remote, msg, 200, "OK", "", "")

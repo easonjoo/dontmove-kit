@@ -33,8 +33,10 @@ type Adapter struct {
 	pendingPeer  string
 	incomingSent bool
 	clipOnce     sync.Once
-	capMu        sync.RWMutex
-	caps         modem.Capabilities
+	// lastResistLog 给"幽灵上下文清不掉"的告警限频（一分钟一次）。
+	lastResistLog time.Time
+	capMu         sync.RWMutex
+	caps          modem.Capabilities
 	events       chan modem.ModemEvent
 	close        sync.Once
 }
@@ -323,6 +325,97 @@ func (a *Adapter) DeleteSMS(ctx context.Context, storageIndex string) error {
 }
 
 func (a *Adapter) Events() <-chan modem.ModemEvent { return a.events }
+
+// ReapGhosts scans AT+CLCC and, when any call context sits in an active,
+// dialing, alerting, incoming or waiting state, sends ATH to clear them.
+// It is the janitor for teardown races: a CANCEL/BYE that lands while the
+// cellular leg is mid-dial can lose the race against the module completing
+// the call, leaving a connected call with no SIP session owning it (seen
+// 2026-09-11: a cancelled dial answered afterwards and stuck as an empty
+// CLCC context until reboot). Returns the number of ghost contexts found.
+// Only call this when no SIP session should own the line.
+func (a *Adapter) ReapGhosts(ctx context.Context) (int, error) {
+	lines, err := a.client.Exchange(ctx, "AT+CLCC")
+	if err != nil {
+		return 0, err
+	}
+	ghosts := 0
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "+CLCC:") {
+			continue
+		}
+		fields := strings.Split(strings.TrimPrefix(line, "+CLCC:"), ",")
+		if len(fields) < 3 {
+			continue
+		}
+		state, stateErr := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if stateErr != nil {
+			continue
+		}
+		// 0=active 2=dialing(MO) 3=alerting(MO) 4=incoming(MT) 5=waiting
+		switch state {
+		case 0, 2, 3, 4, 5:
+			ghosts++
+		}
+	}
+	if ghosts == 0 {
+		return 0, nil
+	}
+	// 指令阶梯：本模块对残留上下文不认 ATH（实测返回 OK 但 CLCC 纹丝不动），
+	// 逐级升级并在每级后复查，清干净即停。CHUP 是 Quectel 风格的全挂断；
+	// CHLD=1/0 兜底释放 active/held。
+	ladder := []string{"ATH", "AT+CHUP", "AT+CHLD=1", "AT+CHLD=0"}
+	var lastErr error
+	for _, cmd := range ladder {
+		if _, lastErr = a.client.Exchange(ctx, cmd); lastErr != nil {
+			continue
+		}
+		time.Sleep(800 * time.Millisecond) // 给 RIL 一点落地时间
+		lines, err = a.client.Exchange(ctx, "AT+CLCC")
+		if err != nil {
+			return ghosts, err
+		}
+		if !clccHasLiveContext(lines) {
+			slog.Info("modem ghost calls cleared", "contexts", ghosts, "cmd", cmd)
+			return ghosts, nil
+		}
+	}
+	// 抵抗的幽灵是模块 AT 层的顽固缓存（实测 ATH/CHUP/CHLD 全部 ERROR，
+	// 仅重启模块可清），不占音频路由也不阻塞拨号——降噪：一分钟最多记一次。
+	a.mu.Lock()
+	first := a.lastResistLog.IsZero() || time.Since(a.lastResistLog) >= time.Minute
+	if first {
+		a.lastResistLog = time.Now()
+	}
+	a.mu.Unlock()
+	if first {
+		slog.Warn("modem ghost calls resist clearing (module reboot clears)", "contexts", ghosts, "last_err", lastErr)
+	}
+	return ghosts, lastErr
+}
+
+// clccHasLiveContext reports whether any +CLCC line is a call context in an
+// active/dialing/alerting/incoming/waiting state.
+func clccHasLiveContext(lines []string) bool {
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "+CLCC:") {
+			continue
+		}
+		fields := strings.Split(strings.TrimPrefix(line, "+CLCC:"), ",")
+		if len(fields) < 3 {
+			continue
+		}
+		state, stateErr := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if stateErr != nil {
+			continue
+		}
+		switch state {
+		case 0, 2, 3, 4, 5:
+			return true
+		}
+	}
+	return false
+}
 
 // clccActive reports whether the +CLCC lines describe a call in the given
 // direction that has reached state 0 (active). dir < 0 matches either

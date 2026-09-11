@@ -108,6 +108,27 @@ func (a *ActiveCallAdapter) WaitActiveDir(ctx context.Context, dir int) (bool, e
 	return true, nil
 }
 
+// ReapGhosts clears leaked cellular call contexts (teardown races where a
+// cancelled call answers afterwards and nobody hangs it up). Only valid when
+// no SIP session owns the line — callers must ensure that. On success the
+// single-active-call bookkeeping is reset so the next dial starts clean.
+func (a *ActiveCallAdapter) ReapGhosts(ctx context.Context) (int, error) {
+	reaper, ok := a.Control.(interface {
+		ReapGhosts(context.Context) (int, error)
+	})
+	if !ok {
+		return 0, nil
+	}
+	n, err := reaper.ReapGhosts(ctx)
+	if err == nil && n > 0 {
+		a.mu.Lock()
+		a.active = ""
+		a.logical = ""
+		a.mu.Unlock()
+	}
+	return n, err
+}
+
 func (a *ActiveCallAdapter) withActive(action func(CallID) error) error {
 	a.mu.Lock()
 	callID := a.active
